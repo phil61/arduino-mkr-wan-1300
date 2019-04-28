@@ -19,7 +19,7 @@
 
 // LoRaWAN
 // Select your region (AS923, AU915, EU868, KR920, IN865, US915, US915_HYBRID)
-_lora_band region = EU868;
+_lora_band region = AU915;
 LoRaModem modem(loraSerial);
 
 // GPS
@@ -53,8 +53,8 @@ void flash(int times, unsigned int speed) {
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  debugSerial.begin(9600);
-  gpsSerial.begin(9600);
+  debugSerial.begin(115200);
+  gpsSerial.begin(4800);  //py - changed baud rate from 9600 to 4800 to suit default for EM-411 GPS module
 
   flash(10, VERY_FAST);
 
@@ -63,20 +63,24 @@ void setup() {
   debugSerial.println(F("Starting up..."));
   flash(2, SLOW);
   
-  // Begin LoRa modem
+  // Start LoRa modem
   if (!modem.begin(region)) {
     debugSerial.println(F("Failed to start module"));
     flash(FOREVER, VERY_FAST);
   };
 
-  debugSerial.print(F("Your device EUI is: "));
+  debugSerial.print(F("Device EUI: "));
   debugSerial.println(modem.deviceEUI());
   flash(2, SLOW);
 
   int connected = modem.joinOTAA(appEui, appKey);
-  if (!connected) {
-    debugSerial.println(F("Something went wrong; are you indoor? Move near a window and retry"));
-    flash(FOREVER, VERY_FAST);
+  
+  while (!connected) {
+    debugSerial.println(F("Unable to log into TTN LoRaWAN network - Retrying..."));
+    modem.restart();
+    flash(80, VERY_FAST);
+    modem.begin(region);
+    connected = modem.joinOTAA(appEui, appKey);
   }
   debugSerial.println(F("Successfully joined the network!"));
 
@@ -84,18 +88,19 @@ void setup() {
   modem.setADR(true);
   modem.dataRate(5);
 
-  debugSerial.println(F("GPS serial init"));
+//Optional section to initialise GPS.  Not required for EM-411
+//  debugSerial.println(F("GPS serial init"));
 //  gpsSerial.println(F(PMTK_SET_NMEA_OUTPUT_RMCGGA));
-  gpsSerial.println(F(PMTK_SET_NMEA_UPDATE_1HZ));   // 1 Hz update rate
-  debugSerial.println(F("GPS serial ready"));
-  flash(2, SLOW);
+//  gpsSerial.println(F(PMTK_SET_NMEA_UPDATE_1HZ));   // 1 Hz update rate - py - disable for EM-411 as already updating at 1 Hz
+//  debugSerial.println(F("GPS serial ready"));
+//  flash(2, SLOW);
 }
 
 void loop() {
   while (gpsSerial.available() > 0) {
     if (gps.encode(gpsSerial.read())) {
-      // For debugging
-      // displayGpsInfo();
+      
+      displayGpsInfo(); // For debugging
       sendCoords();
 
       // Delay between updates
@@ -110,7 +115,9 @@ void loop() {
 }
 
 void sendCoords() {
-  if (gps.location.age() < 1000 && (millis() - last_update) >= 1000) {
+  // py - modified following conditional to include test for hdop <= 2, time and date are valid to prevent sending bad co-ordinates  
+  if ((gps.location.age() < 1000) && ((millis() - last_update) >= 1000) && (gps.hdop.value() <= 200)
+      && gps.time.isValid() && gps.location.isValid()){
     digitalWrite(LED_BUILTIN, HIGH);
 
     buildPacket();
@@ -120,13 +127,12 @@ void sendCoords() {
     int err = modem.endPacket(false);
   
     if (err > 0) {
-      debugSerial.println("Big success!");
+      debugSerial.println("Coordinates sent!");
       flash(3, FAST);
     } else {
       debugSerial.println("Error");
       flash(10, VERY_FAST);
     }
-    debugSerial.println("TX done");
 
     last_update = millis();
 
@@ -151,7 +157,7 @@ void buildPacket() {
   txBuffer[6] = ( altitudeGps >> 8 ) & 0xFF;
   txBuffer[7] = altitudeGps & 0xFF;
 
-  hdopGps = gps.hdop.value()/10;
+  hdopGps = gps.hdop.value()/10.0;
   txBuffer[8] = hdopGps & 0xFF;
 }
 
@@ -172,9 +178,9 @@ void displayGpsInfo()
   debugSerial.print(F("  Date/Time: "));
   if (gps.date.isValid())
   {
-    debugSerial.print(gps.date.month());
-    debugSerial.print(F("/"));
     debugSerial.print(gps.date.day());
+    debugSerial.print(F("/"));
+    debugSerial.print(gps.date.month());
     debugSerial.print(F("/"));
     debugSerial.print(gps.date.year());
   }
@@ -203,7 +209,14 @@ void displayGpsInfo()
     debugSerial.print(F("INVALID"));
   }
 
+  debugSerial.print(F("  ALT: "));
+  debugSerial.print(gps.altitude.meters());
+
+  debugSerial.print(F("  SAT: "));
+  debugSerial.print(gps.satellites.value());
+
+  debugSerial.print(F("  HDOP: "));
+  debugSerial.print(gps.hdop.value()/100.0);
+
   debugSerial.println();
 }
-
-
